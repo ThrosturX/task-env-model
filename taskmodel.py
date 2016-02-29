@@ -2,7 +2,7 @@ import math
 import numpy
 import random
 import traceback
-from scipy.special import lambertw
+#from scipy.special import lambertw
 
 def warning(msg):
     try:
@@ -61,8 +61,8 @@ class UnboundedTaskEnvironmentVariable(AbstractTaskEnvironmentVariable):
         # update velocity
         old_vel = self.velocity
         self.velocity = self.calc_velocity(delta_time)
-#       if self.velocity and old_vel / self.velocity < 0: # sign changed
-#           self.velocity = 0 # quick hack -- should take static friction into account instead
+        if self.velocity and old_vel / self.velocity < 0: # sign changed
+            self.velocity = 0 # quick hack -- should take static friction into account instead
         # update value
         self.value = self.value + float(self.velocity * delta_time) # value updated based on current velocity
         return self.value
@@ -77,38 +77,40 @@ class UnboundedTaskEnvironmentVariable(AbstractTaskEnvironmentVariable):
         sign_p = 1 if power >= 0 else -1
         sign_v = 1 if self.velocity >= 0 else -1
         F_comp_grav = - self.mass * self.gravity * math.sin(self.angle)
-        F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_kinetic
-        F_net = F_comp_grav - F_fric 
 
-        # raw numbers ready, now convert directions if appropriate
-        if power < 0: # if the power is negative, pretend that it's positive and velocity is in opposite diretion
-            power = abs(power)
-            vel_rel = -vel_rel
-            final_sign = -1
-        elif vel_rel < 0:
-            final_sign = -1
-        if vel_rel < 0: # if velocity is negative, then friction *helps* power if power is positive
-            F_net = -F_net
-        if power and F_net:
-            # This monsterous formula is the result of some rather complicated integration and algebra, I had some help...
-            if vel_rel >= 0:
-                branch = '1'
-                velocity = -(power * (lambertw(
-                    ( -math.exp(-delta_time * (F_net ** 2) / (self.mass * power) - vel_rel * F_net / power  - 1) * (vel_rel*F_net+power)
-                    ) / power) + 1)) / F_net
-                velocity = velocity.real * final_sign
-            else:
-                branch = '2'
-                velocity = -(power * (lambertw(
-                    ( math.exp(-delta_time * (F_net ** 2) / (self.mass * power)+ vel_rel * F_net / power - 1) * (vel_rel*F_net-power)
-                    ) / power) +1)) / F_net
-                velocity = velocity.real#* final_sign
-            print("\t::: {:.2f} -> ({:.2f},{:.2f}j) due to {} W in {} s. (branch {})".format(self.velocity, velocity.real, velocity.imag, abs(power) * sign_p, delta_time, branch))
+
+        # Branching!!
+        if self.velocity == 0:
+            F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_static
+            F_net = F_comp_grav - F_fric 
+            F_net = F_net * sign_v
+            # Special case
+            KEP = power * delta_time # increase in energy due to power
+            KEF = F_net * vel_rel * delta_time # energy consumed by friction
+            KE = KEP + KEF
+        
+            velsquared = 2 * (KE) / self.mass
+            sign_vs = 1 if velsquared > 0 else -1
+            velocity = math.sqrt(abs(velsquared)) * sign_vs
         else:
-#           warning("No power or F_net: {}, {}".format(power, F_net))
-            acceleration = self.calc_acceleration(delta_time)
-            velocity = self.velocity + acceleration
-#           print("acceleration: {}, velocity: {}".format(acceleration, velocity))
+            F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_kinetic
+            F_net = F_comp_grav - F_fric 
+            # Friction acts in the opposite direction of velocity
+            opps = -1 if power < 0 and self.velocity < 0 else 1
+            F_net = F_net * sign_v * opps
+            # m dv / dt = P/v+F => dv = (P/v+F)dt /m
+            dv = ((power / vel_rel) + F_net) * delta_time / self.mass
+#           input("v: {:.2f}, dv: {:.2f}".format(self.velocity, dv))
+            velocity = self.velocity + dv * opps
+            # If there exists a point 0 < c < dt where v(c) == 0, then we need to go back to
+            # the case where velocity is zero.                      NOTE NOTE NOTE NOTE NOTE
+            # We can either stop the item for this time slice,      NOTE NOTE NOTE NOTE NOTE
+            # or split the calculation up further                   NOTE NOTE NOTE NOTE NOTE
+            # by calculating the exact time it stops and continuing from there,    NOTE NOTE
+            # but I leave this as future work
+            if velocity > 0 and sign_v < 0: # if the sign changed, then v(c) == 0 exists for 0 < c < dt
+                velocity = +0.0
+
         return velocity
 
     def min_energy(self, delta_time=1):
@@ -240,12 +242,16 @@ class TaskEnvironmentModel(object):
         self.variables = variables
         self.transitions = transitions
         self.clock = 0
+        self.dt = 0.001
 
     def tick(self, delta_time):
         """Affect every variable with the natural change caused by delta_time seconds elapsing"""
-        for variable in self.variables:
-            variable.natural_transition(float(delta_time))
-        self.clock += delta_time
+        time_passed = 0
+        while time_passed < delta_time:
+            time_passed += self.dt
+            for variable in self.variables:
+                variable.natural_transition(float(self.dt))
+        self.clock += delta_time # TODO: does this matter?
 
     def get_transitions(self):
         return self.transitions
