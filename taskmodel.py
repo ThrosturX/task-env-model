@@ -77,24 +77,33 @@ class UnboundedTaskEnvironmentVariable(AbstractTaskEnvironmentVariable):
         sign_p = 1 if power >= 0 else -1
         sign_v = 1 if self.velocity >= 0 else -1
         F_comp_grav = - self.mass * self.gravity * math.sin(self.angle)
-
+        F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_kinetic
+        F_net = F_comp_grav - F_fric 
 
         # Branching!!
         if self.velocity == 0:
-            F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_static
-            F_net = F_comp_grav - F_fric 
-            F_net = F_net * sign_v
-            # Special case
-            KEP = power * delta_time # increase in energy due to power
-            KEF = F_net * vel_rel * delta_time # energy consumed by friction
-            KE = KEP + KEF
-        
-            velsquared = 2 * (KE) / self.mass
-            sign_vs = 1 if velsquared > 0 else -1
-            velocity = math.sqrt(abs(velsquared)) * sign_vs
+            # Limited approximation method.
+            # Calculate F_static in newtons and check if F_power is higher, if not, nothing happens (velocity stays at zero)
+            # Formulas:
+            # F_power = a_power * m
+            # a_power = sqrt(P/2mt)
+            # F_static = mg cos(angle) * mu_static
+            # F_fric = mg cos(angle) * mu_kin
+            # IF F_power > F_static THEN F_tot = F_power - F_net (F_net is the force due to friction and gravity)
+            # NOW a = F_tot / m and v = a * dt
+            ###
+            F_static = self.mass * self.gravity * math.cos(self.angle) * self.friction_static
+            F_net = F_net * sign_v # is this necessary??
+            a_power = math.sqrt(abs(power)/(2 * self.mass * delta_time))
+            F_power = a_power * self.mass
+            if abs(F_power) > abs(F_static):
+                    F_tot = F_power - F_net
+                    acceleration = (F_tot / self.mass) * sign_p
+                    velocity = acceleration * delta_time
+                    input('{} {}'.format(acceleration, velocity))
+            else:
+                velocity = 0
         else:
-            F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_kinetic
-            F_net = F_comp_grav - F_fric 
             # Friction acts in the opposite direction of velocity
             opps = -1 if power < 0 and self.velocity < 0 else 1
             F_net = F_net * sign_v * opps
