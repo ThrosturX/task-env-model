@@ -13,32 +13,6 @@ def warning(msg):
         if DEBUG:
             print(msg)
 
-class AbstractTaskEnvironmentVariable(object):
-    """A class to encapsulate variables in the environment"""
-#   def __init__(self, start_value, start_delta, goal_value, goal_delta):
-#       self.value = start_value + random.uniform(-start_delta, start_delta)
-#       self.goal = goal_value
-#       self.goal_delta = goal_delta
-
-#   def in_goal(self):
-#       """Utility to check if the variable is in a goal state"""
-#       lower = self.goal - self.goal_delta
-#       upper = self.goal + self.goal_delta
-#       return self.in_range(lower, upper)
-
-#   def in_range(self, lower, upper):
-#       """Utility to check if a variable is in a range"""
-#       return self.goal >= lower and self.goal <= upper
-
-#   def dist_to_goal(self):
-#       dist1 = abs(self.goal + self.goal_delta - self.value)
-#       dist2 = abs(self.goal - self.goal_delta - self.value)
-#       return min(dist1, dist2)
-
-    def natural_transition(self, delta_time):
-        pass # no return value needed #(?)
-#       return self.value # no change
-
 class UnboundedTaskEnvironmentVariable(object):
     """'Physical' variables, 'slider'
     This class encapsulates the basic physics behind the variables
@@ -233,9 +207,16 @@ class TaskEnvironmentTransition(object):
     def __init__(self, affected_variables, transition_function):
         self.affected_variables = affected_variables
         self.transition = transition_function
+        def precondition(): return True
+        self.precondition = precondition
+
+    def set_precondition(self, precondition):
+        self.precondition = precondition
 
     def apply_transition(self, *args):
         """Apply a transition function to variables and return the resulting variable set"""
+        if not self.precondition():
+            return None
         if self.affected_variables: # affected_variables get unpacked
             new_variables = self.transition(*self.affected_variables, *args)
         else:
@@ -243,7 +224,23 @@ class TaskEnvironmentTransition(object):
             new_variables = self.transition(*args)
         return new_variables
 
+# SENCTOR
+class TaskEnvironmentSystem(object):
+    """Class to encapsulate the behavior of a variable. Simplifies interaction.
+    Systems can have variables, transitions, motors and sensors.
+    """
+    def __init__(self, variables, transitions=None, motors=None, sensors=None):
+        self.variables = variables
+        self.transitions = transitions
+        self.motors = motors
+        self.sensors = sensors
+
+    def satisfies(self, solution):
+        result = solution(*self.variables)
+        return result
+
 # TODO: this is a system, and needs to be broken down into System and TEM
+# TODO: TEM's should handle systems properly
 class TaskEnvironmentModel(object):
     """Represent task environment models as E = {V,T}"""
     def __init__(self, variables, transitions):
