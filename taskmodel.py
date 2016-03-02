@@ -15,36 +15,36 @@ def warning(msg):
 
 class AbstractTaskEnvironmentVariable(object):
     """A class to encapsulate variables in the environment"""
-    def __init__(self, start_value, start_delta, goal_value, goal_delta):
-        self.value = start_value + random.uniform(-start_delta, start_delta)
-        self.goal = goal_value
-        self.goal_delta = goal_delta
+#   def __init__(self, start_value, start_delta, goal_value, goal_delta):
+#       self.value = start_value + random.uniform(-start_delta, start_delta)
+#       self.goal = goal_value
+#       self.goal_delta = goal_delta
 
-    def in_goal(self):
-        """Utility to check if the variable is in a goal state"""
-        lower = self.goal - self.goal_delta
-        upper = self.goal + self.goal_delta
-        return self.in_range(lower, upper)
+#   def in_goal(self):
+#       """Utility to check if the variable is in a goal state"""
+#       lower = self.goal - self.goal_delta
+#       upper = self.goal + self.goal_delta
+#       return self.in_range(lower, upper)
 
-    def in_range(self, lower, upper):
-        """Utility to check if a variable is in a range"""
-        return self.goal >= lower and self.goal <= upper
+#   def in_range(self, lower, upper):
+#       """Utility to check if a variable is in a range"""
+#       return self.goal >= lower and self.goal <= upper
 
-    def dist_to_goal(self):
-        dist1 = abs(self.goal + self.goal_delta - self.value)
-        dist2 = abs(self.goal - self.goal_delta - self.value)
-        return min(dist1, dist2)
+#   def dist_to_goal(self):
+#       dist1 = abs(self.goal + self.goal_delta - self.value)
+#       dist2 = abs(self.goal - self.goal_delta - self.value)
+#       return min(dist1, dist2)
 
     def natural_transition(self, delta_time):
         pass # no return value needed #(?)
 #       return self.value # no change
 
-class UnboundedTaskEnvironmentVariable(AbstractTaskEnvironmentVariable):
+class UnboundedTaskEnvironmentVariable(object):
     """'Physical' variables, 'slider'
     This class encapsulates the basic physics behind the variables
     """
-    def __init__(self, start_value, start_delta, goal_value, goal_delta, mass=1, initial_velocity=0):
-        super().__init__(float(start_value), start_delta, goal_value, goal_delta)
+    def __init__(self, start_value, start_delta, mass=1, initial_velocity=0):
+        self.value = start_value + random.uniform(-start_delta, start_delta)
         self.velocity = initial_velocity
         self.mass = mass
         self.friction_static = 0
@@ -100,7 +100,6 @@ class UnboundedTaskEnvironmentVariable(AbstractTaskEnvironmentVariable):
                     F_tot = F_power - F_net
                     acceleration = (F_tot / self.mass) * sign_p
                     velocity = acceleration * delta_time
-                    input('{} {}'.format(acceleration, velocity))
             else:
                 velocity = 0
         else:
@@ -269,6 +268,7 @@ class TaskEnvironmentModel(object):
         assert transition in self.transitions, "The transition must be a part of the task environment model to be fired"
         transition.apply_transition(*args)
 
+    # TODO -- SYSREF SYSTEM REFACTORING
     def energy_needed(self):
         """Calculate the necessary power to move every variable into a goal position"""
         joules = 0
@@ -293,6 +293,7 @@ class TaskEnvironmentModel(object):
                 joules += 0 # We might want to add some "minimum power"
         return joules
 
+    # TODO -- SYSREF SYSTEM REFACTORING
     def minimum_time(self, motors):
         """Calculate which variable takes the longest to move into the goal position given a set of motors"""
         def calc_time(var, motor):
@@ -416,74 +417,11 @@ class Sensor(object):
         value = value + random.uniform(-self.distortion, self.distortion)
         return round(value, self.n_digits)
 
-def simple_whack_mole():
-    X = TaskEnvironmentVariable(15, 5, 300, 10)
-    X.set_bounds(0, 500)
-    X.gravity = 10
-    X.friction_kinetic = 0.2
-    X.friction_static = 0.3
-    Y = TaskEnvironmentVariable(25, 5, 200, 10)
-    Y.set_bounds(0, 500)
-    Y.gravity = 10
-    Y.friction_kinetic = 0.2
-    Y.friction_static = 0.3
-    V = [X, Y]
-    V = [X]
-    motor_properties = {'max_power': 100}
-
-    mx = Motor(X, motor_properties)
-    my = Motor(Y, motor_properties)
-    T = [mx.activation, my.activation]
-    
-    env = TaskEnvironmentModel(V, T)
-
-#   min_energy = X.calc_min_energy(60)
-#   print("{} solvable in {} seconds.".format("X", min_time))
-#   print("{} solvable with {} Joules.".format("X", min_energy))
-    drift_kin, drift_vel, drift_time = X.calc_drift()
-    max_time = 10
-    min_energy, min_e_factors = X.calc_min_energy(10)
-    min_time = X.calc_min_time(min_energy)
-    E_start = min_e_factors[0]
-    E_stop  = min_e_factors[1]
-    print("Need {:.2f} J to move it in {} seconds".format(min_energy, max_time))
-    print("The distance is {}".format(X.goal - X.value))
-    print("{:.2f} m/s v0 should move it in {:.2f} s ({:.2f} J)".format(drift_vel, drift_time, drift_kin))
-    print("t  0 vel: {}, val: {}".format(X.velocity, X.value))
-    for i in range(int(drift_time)):
-        print("t {:2d} vel: {:.2f}, val: {:.2f}".format(i, X.velocity, X.value))
-        if i == 0:
-            mx.activate(E_start)
-            print("Activated {} W".format(E_start))
-        elif i == max_time:
-            mx.activate(-E_stop)
-            print("Activated {} W".format(-E_stop))
-        env.tick(1)
-    print("t {:2d} vel: {:.2f}, val: {:.2f}".format(i, X.velocity, X.value))
-    # agent code
-    import simple_agent
-    sx = Sensor(X, -1, 3)
-    sy = Sensor(Y, -1, 3)
-    sensors = [sx, sy]
-    motors = [mx, my]
-    agent = simple_agent.CheatingTaskEnvironmentAgent(env, sensors, motors)
-    # let the agent try to solve the problem
-    no_steps = 0
-    print("Distance left: {}".format(X.dist_to_goal()))
-    return
-    while not env.solved():
-        agent.perform(1)
-        no_steps += 1
-        for s_no, sensor in enumerate(sensors):
-            print("| S{}: {:.2f} / {} ".format(s_no, sensor.read(), sensor.variable.goal), end='')
-        print(" {} \r".format(no_steps), end='')
-    else:
-        print("\nProblem solved in {} steps".format(no_steps))
 
 if __name__ == '__main__':
     # no arguments yet
     try:
-        simple_whack_mole()
+        print("No main method here")
     except SystemExit:
         exit(1)
     except KeyboardInterrupt:
