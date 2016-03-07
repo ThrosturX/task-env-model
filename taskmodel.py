@@ -2,7 +2,6 @@ import math
 import numpy
 import random
 import traceback
-#from scipy.special import lambertw
 
 def warning(msg):
     try:
@@ -13,7 +12,36 @@ def warning(msg):
         if DEBUG:
             print(msg)
 
-class UnboundedTaskEnvironmentVariable(object):
+class AbstractVariable(object):
+    """Implements syntactic sugar allowing easy variable manipulation"""
+    def __add__(self, other):
+        return self.value + other
+
+    def __radd__(self, other):
+        return self.value + other
+
+    def __sub__(self, other):
+        return self.value - other
+
+    def __rsub__(self, other):
+        return - self.value + other
+
+    def __lt__(self, other):
+        return self.value < other
+
+    def __gt__(self, other):
+        return self.value > other
+
+    def __str__(self):
+        return "[{}]".format(self.value)
+
+    def get_name(self):
+        try:
+            return self.name
+        except AttributeError:
+            return repr(self)
+
+class UnboundedTaskEnvironmentVariable(AbstractVariable):
     """'Physical' variables, 'slider'
     This class encapsulates the basic physics behind the variables
     """
@@ -26,18 +54,18 @@ class UnboundedTaskEnvironmentVariable(object):
         self.angle = 0 # radians 
         self.gravity = 0
         self.affectors = []
+        self.locked = False
 
     def natural_transition(self, delta_time=1):
+        if self.locked:
+            warning("{} is locked".format(self.name))
+            return self.value # no change if locked
         if self.velocity == 0 and self.angle == 0 and not self.affectors:
             return self.value # not in any state of change
-        # before updating, we must decelerate due to friction
-#       acceleration = self.calc_acceleration(delta_time)
         # update velocity
         old_vel = self.velocity
         self.velocity = self.calc_velocity(delta_time)
-        if self.velocity and old_vel / self.velocity < 0: # sign changed
-            self.velocity = 0 # quick hack -- should take static friction into account instead
-        # update value
+        # update value ( s1 = s0 + v dt )
         self.value = self.value + float(self.velocity * delta_time) # value updated based on current velocity
         return self.value
 
@@ -62,18 +90,23 @@ class UnboundedTaskEnvironmentVariable(object):
             # F_power = a_power * m
             # a_power = sqrt(P/2mt)
             # F_static = mg cos(angle) * mu_static
-            # F_fric = mg cos(angle) * mu_kin
-            # IF F_power > F_static THEN F_tot = F_power - F_net (F_net is the force due to friction and gravity)
-            # NOW a = F_tot / m and v = a * dt
             ###
             F_static = self.mass * self.gravity * math.cos(self.angle) * self.friction_static
             F_net = F_net * sign_v # is this necessary??
             a_power = math.sqrt(abs(power)/(2 * self.mass * delta_time))
             F_power = a_power * self.mass
+            # IF F_power > F_static THEN F_tot = F_power - F_net (F_net is the force due to friction and gravity)
             if abs(F_power) > abs(F_static):
+                # NOW a = F_tot / m and v = a * dt
                     F_tot = F_power - F_net
                     acceleration = (F_tot / self.mass) * sign_p
                     velocity = acceleration * delta_time
+            # there might still be some acceleration due to gravity...
+            elif abs(F_comp_grav) > abs(F_static):
+                # TODO THIS PART
+                F_tot = F_comp_grav + F_power - F_fric
+                acceleration = (F_tot / self.mass) * sign_p
+                velocity = acceleration * delta_time
             else:
                 velocity = 0
         else:
@@ -95,6 +128,13 @@ class UnboundedTaskEnvironmentVariable(object):
 
         return velocity
 
+    def lock(self):
+        self.locked = True
+
+    def unlock(self):
+        self.locked = False
+
+    # TODO: marked for refactoring
     def min_energy(self, delta_time=1):
         """Determine how much energy must be supplied to have any effect with a time resolution of delta_time"""
         acceleration = self.calc_acceleration()
@@ -102,6 +142,7 @@ class UnboundedTaskEnvironmentVariable(object):
         E_kin = (min_velocity ** 2) * self.mass / 2
         return E_kin
 
+    # TODO: marked for refactoring
     def min_time_resolution(self, max_energy):
         """Determine the mininmum time resolution required if we can only deliver max_energy joules per second"""
         acceleration = self.calc_acceleration()
@@ -109,7 +150,8 @@ class UnboundedTaskEnvironmentVariable(object):
         delta_time = max_velocity / acceleration
         return delta_time
 
-    def calc_acceleration(self, delta_time=1):
+    # TODO: NEEDS TESTING
+    def calc_acceleration(self):
         """Calculate the acceleration due to gravity and friction"""
         F_grav = self.mass * self.gravity
         F_norm = F_grav * math.cos(self.angle)
@@ -119,17 +161,17 @@ class UnboundedTaskEnvironmentVariable(object):
         F_sign = 1 if F_tot >= 0 else -1
         F_net = (abs(F_tot) - abs(F_fric)) * F_sign
         acceleration = F_net / self.mass
+        # TODO: NEEDS TESTING
         if abs(F_tot) < abs(F_fric): # force can't overcome friction
             if self.velocity == 0:
                 acceleration = 0
             elif self.velocity > 0:
-                acceleration = -F_fric / self.mass
+                acceleration = -F_fric + F_tot / self.mass
             elif self.velocity < 0:
-                acceleration = +F_fric / self.mass
-            if acceleration > self.velocity: # stop the item if it reaches rest # TODO quick hack
-                acceleration = -self.velocity * delta_time
+                acceleration = +F_fric + F_tot / self.mass
         return acceleration
 
+    # TODO: marked for inspection
     def calc_power_limits(self, delta_time=1):
         F_grav = self.mass * self.gravity
         F_norm = F_grav * math.cos(self.angle)
@@ -143,16 +185,19 @@ class UnboundedTaskEnvironmentVariable(object):
         P_grav = 2 * self.mass * delta_time * (grav_accel ** 2)
         return P_stat, P_kine, P_grav
 
+    # TODO: needs testing
     # If there is no kinetic friction, the energy required is at the limit of zero and time depends on how much energy you put in
-    def calc_drift(self):
+    def calc_drift(self, goal, delta=0):
         """Calculate the kinetic energy, initial velocity and time required for the item to drift into the goal"""
-        distance = abs(self.goal - self.value)#- self.goal_delta
+        distance = abs(goal - self.value) - delta
                  # F_Grav * angle * mu ## we assume no static friction for optimization
         F_fric   = (self.mass * self.gravity) * math.cos(self.angle) * self.friction_kinetic
         accelneg = -F_fric / self.mass
         # calculate the energy required to accelerate the item to a velocity that will drift into the final position
-        drift_vel = math.sqrt(-2 * accelneg * distance)
-        drift_kin = 0.5 * self.mass * (drift_vel ** 2)
+        work = F_fric * distance
+        drift_kin = abs(work) # 0.5 * self.mass * (drift_vel ** 2)
+        # TODO: vel and time need testing
+        drift_vel = math.sqrt((2 * drift_kin)/self.mass)
         drift_time = -drift_vel / accelneg
         return (drift_kin, drift_vel, drift_time)
 
@@ -199,7 +244,7 @@ class TaskEnvironmentVariable(UnboundedTaskEnvironmentVariable):
         old_value = self.value
         self.value = max(self.lower_bound, min(self.upper_bound, value))
         if old_value != self.value:
-            self.velocity = 0
+            self.velocity = 0 # if we reach the bounds, we stop moving (something else would need to detect actual collisions and deal with them)
         return value
 
 class TaskEnvironmentTransition(object):
@@ -224,112 +269,167 @@ class TaskEnvironmentTransition(object):
             new_variables = self.transition(*args)
         return new_variables
 
+class TaskEnvironmentGoal(object):
+    def __init__(self, target, goal_value, goal_delta):
+        # maybe check the types here
+        self.target = target
+        self.value = goal_value
+        self.delta = goal_delta
+        self.satisfied = False
+        self.prerequisite = None
+
+    def set_prerequisite(self, goal):
+        self.prerequisite = goal
+
+    def assess(self):
+        if self.current_condition():
+            if not self.prerequisite                   \
+            or (self.prerequisite                      \
+            and self.prerequisite.current_condition()  \
+               ):
+                self.satisfied = True
+
+    def current_condition(self):
+        if self.target < self.value + self.delta \
+        and self.target > self.value - self.delta:
+            return True
+
 # SENCTOR
 class TaskEnvironmentSystem(object):
     """Class to encapsulate the behavior of a variable. Simplifies interaction.
     Systems can have variables, transitions, motors and sensors.
     """
-    def __init__(self, variables, transitions=None, motors=None, sensors=None):
+    def __init__(self, variables, transitions=[], motors=[], sensors=[], systems=[]):
+        if not hasattr(variables, '__iter__'):
+            variables = [variables]
+        if not hasattr(transitions, '__iter__'):
+            transitions = [transitions]
+        if not hasattr(motors, '__iter__'):
+            motors = [motors]
+        if not hasattr(sensors, '__iter__'):
+            sensors = [sensors]
+        if not hasattr(systems, '__iter__'):
+            systems = [systems]
         self.variables = variables
         self.transitions = transitions
         self.motors = motors
         self.sensors = sensors
+        self.systems = systems
 
     def satisfies(self, solution):
         result = solution(*self.variables)
         return result
 
-# TODO: this is a system, and needs to be broken down into System and TEM
-# TODO: TEM's should handle systems properly
+    def all_variables(self):
+        if not self.systems:
+            return self.variables
+        all_variables = set(self.variables.copy())
+        for system in self.systems:
+            all_variables = all_variables.union(system.all_variables())
+        return list(all_variables)
+
+    def all_motors(self):
+        if not self.systems:
+            return self.motors
+        all_motors = set(self.motors.copy())
+        for system in self.systems:
+            all_motors = all_motors.union(system.all_motors())
+        return list(all_motors)
+
+    def all_sensors(self):
+        if not self.systems:
+            return self.sensors
+        all_sensors = set(self.sensors.copy())
+        for system in self.systems:
+            all_sensors = all_sensors.union(system.all_sensors())
+        return list(all_sensors)
+
+    def all_systems(self):
+        if not self.systems:
+            return [self]
+        return list(self.systems)
+
+    def lock_variables(self):
+        for variable in self.variables:
+            variable.lock()
+
+    def unlock_variables(self):
+        for variable in self.variables:
+            variable.unlock()
+
 class TaskEnvironmentModel(object):
-    """Represent task environment models as E = {V,T}"""
-    def __init__(self, variables, transitions):
-        self.variables = variables
-        self.transitions = transitions
+    """Represent task environment models as E = {V,T}
+    With some abstractions.
+    """
+    def __init__(self, environment, solution):
+        self.environment = environment  # should be a system
+        self.solution = solution        # should be a list of goals
         self.clock = 0
         self.dt = 0.001
+        self.solution_score = 0.0 # the model starts as 'unsolved' with respect to any solutions
+
+    def all_variables(self):
+        all_vars = set()
+        for variable in self.environment.all_variables():
+            all_vars.add(variable)
+        return all_vars
 
     def tick(self, delta_time):
         """Affect every variable with the natural change caused by delta_time seconds elapsing"""
         time_passed = 0
         while time_passed < delta_time:
             time_passed += self.dt
-            for variable in self.variables:
+            for variable in self.all_variables():
                 variable.natural_transition(float(self.dt))
-        self.clock += delta_time # TODO: does this matter?
+                self.check_for_solutions()
+        self.clock += delta_time 
 
-    def get_transitions(self):
-        return self.transitions
+    # a solution is set of booleans representing achieved goals
+    # for now solutions are simple booleans
+    def check_for_solutions(self):
+        if self.solved():
+            self.solution_score = 1.0
 
-    def fire_transition(self, transition, *args):
-        assert transition in self.transitions, "The transition must be a part of the task environment model to be fired"
-        transition.apply_transition(*args)
+    def motors(self):
+        return self.environment.all_motors()
 
-    # TODO -- SYSREF SYSTEM REFACTORING
+    def solved(self):
+        for goal in self.solution:
+            goal.assess()
+            if not goal.satisfied:
+                return False
+        return True
+
+    def goal_vars(self):
+        g_vars = []
+        for goal in self.solution:
+            element = goal.target, goal.value, goal.delta
+            g_vars.append(element)
+        return g_vars
+
     def energy_needed(self):
         """Calculate the necessary power to move every variable into a goal position"""
         joules = 0
-        for var in self.variables:
+        for var, goal, delta in self.goal_vars():
             if var.friction_kinetic > 0:  # kinetic friction present, calculate drift energy
-                E_min, _, _ = var.calc_drift()
+                E_min, _, _ = var.calc_drift(goal, delta)
                 joules += E_min
             elif var.calc_acceleration() != 0:
                 # the variable is (probably) moving away from its goal constantly,
                 # so calculate the energy to move it directly to the goal
                 a = var.calc_acceleration()
-                d = var.dist_to_goal()
+                d = abs(var - goal)
                 # edge case #1: acceleration moves the value into the goal at some point in the future
-                if a > 0 and var.value < var.goal_value \
-                or a < 0 and var.value < var.goal_value:
+                if a > 0 and var < goal \
+                or a < 0 and var < goal:
                     joules == 0
                 else:
                     # work = force x distance
-                    watts = var.mass * a * d
-                    joules += watts # cheating a little bit here not sure if this is OK # TODO
+                    work = abs(var.mass * a * d)
+                    joules += work 
             else: # There is no kinetic friction, so essentially this variable is 'free' apart from the initial push and equal stop, which we won't count since it depends on a time resolution
                 joules += 0 # We might want to add some "minimum power"
         return joules
-
-    # TODO -- SYSREF SYSTEM REFACTORING
-    def minimum_time(self, motors):
-        """Calculate which variable takes the longest to move into the goal position given a set of motors"""
-        def calc_time(var, motor):
-            if isinstance(motor, MultiMotor):
-                power = motor.targetmap.get(var) * motor.max_power
-            else:
-                power = motor.max_power
-            # check if it needs to be reversed
-            if var.value > var.goal:
-                if not motor.reversible:
-                    return
-                power = power * motor.reverse_power_ratio
-            # calculate the time needed with this power
-            dist_left = var.dist_to_goal()
-            time = (((3 * dist_left) ** 2) * var.mass ) ** (1/3) / 2 * (power ** (1/3))
-            def rt23(x):
-                return x ** (2/3)
-            time = (rt23(3) * (var.mass ** (1/3)) * rt23(dist_left)) / (2 * (power ** (1/3)))
-            return time
-        varmap = {}
-        for motor in motors:
-#           transition = motor.activation
-            affected = transition.affected_variables
-            for var in affected:
-                varmap[var] = calc_time(var, motor)
-        for k,d in varmap.items():
-            print("{}: {}".format(k,d))
-        if varmap:
-            longest_time = max(varmap.values())
-        # TODO: Something is wrong here or elsewhere, look at paper
-        # https://kb.osu.edu/dspace/bitstream/handle/1811/2458/V30N04_218.pdf
-
-    def solved(self):
-        for variable in self.variables:
-            lower_bound = variable.goal - variable.goal_delta
-            upper_bound = variable.goal + variable.goal_delta
-            if variable.value < lower_bound or variable.value > upper_bound:
-                return False
-        return True   
 
 class Motor(object): # 'Actuator'
     """A class to affect TaskEnvironmentVariables"""
@@ -363,7 +463,6 @@ class Motor(object): # 'Actuator'
             return self.power_level
         warning("Attempting to find the component of a motor that doesn't target {}".format(item))
         return 0
-
 
 class MultiMotor(Motor):
     """A class that extends Motors to allow modifications to multiple TaskEnvironmentVariables"""
