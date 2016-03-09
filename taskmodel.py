@@ -26,6 +26,12 @@ class AbstractVariable(object):
     def __rsub__(self, other):
         return - self.value + other
 
+    def __mul__(self, other):
+        return self.value * other
+
+    def __rmul__(self, other):
+        return self.value * other
+
     def __lt__(self, other):
         return self.value < other
 
@@ -75,55 +81,55 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         for affector in self.affectors:
             power += affector.component(self)
         final_sign = 1
-        vel_rel = self.velocity
         sign_p = 1 if power >= 0 else -1
         sign_v = 1 if self.velocity >= 0 else -1
         F_comp_grav = - self.mass * self.gravity * math.sin(self.angle)
         F_fric = self.mass * self.gravity * math.cos(self.angle) * self.friction_kinetic
-        F_net = F_comp_grav - F_fric 
 
-        # Branching!!
+        # Branch based on velocity to avoid div/0 
         if self.velocity == 0:
             # Limited approximation method.
             # Calculate F_static in newtons and check if F_power is higher, if not, nothing happens (velocity stays at zero)
+            # also account for gravity
             # Formulas:
             # F_power = a_power * m
             # a_power = sqrt(P/2mt)
             # F_static = mg cos(angle) * mu_static
             ###
             F_static = self.mass * self.gravity * math.cos(self.angle) * self.friction_static
-            F_net = F_net * sign_v # is this necessary??
-            a_power = math.sqrt(abs(power)/(2 * self.mass * delta_time))
-            F_power = a_power * self.mass
+            a_power = math.sqrt(abs(power)/(2 * self.mass * delta_time)) * sign_p
+            a_movement = a_power - math.sin(self.angle) * self.gravity # gravity "goes the wrong way"
+            F_movement = a_movement * self.mass
             # IF F_power > F_static THEN F_tot = F_power - F_net (F_net is the force due to friction and gravity)
-            if abs(F_power) > abs(F_static):
+            if abs(F_movement) > abs(F_static):
                 # NOW a = F_tot / m and v = a * dt
-                    F_tot = F_power - F_net
-                    acceleration = (F_tot / self.mass) * sign_p
-                    velocity = acceleration * delta_time
-            # there might still be some acceleration due to gravity...
-            elif abs(F_comp_grav) > abs(F_static):
-                # TODO THIS PART
-                F_tot = F_comp_grav + F_power - F_fric
-                acceleration = (F_tot / self.mass) * sign_p
+                sign_f = 1 if F_movement >= 0 else -1
+                F_tot = sign_f * (abs(F_movement) - abs(F_fric))
+                assert(F_tot * sign_f > 0), "Dealing with negative forces? Then there's probably a bug in here!"
+                acceleration = (F_tot / self.mass) 
                 velocity = acceleration * delta_time
             else:
                 velocity = 0
         else:
             # Friction acts in the opposite direction of velocity
             opps = -1 if power < 0 and self.velocity < 0 else 1
-            F_net = F_net * sign_v * opps
-            # m dv / dt = P/v+F => dv = (P/v+F)dt /m
-            dv = ((power / vel_rel) + F_net) * delta_time / self.mass
-#           input("v: {:.2f}, dv: {:.2f}".format(self.velocity, dv))
-            velocity = self.velocity + dv * opps
+            F_fric = - F_fric * sign_v 
+            # m dv / dt = P/v+F => dv = (P/v+F)dt / m
+            # also: dv = ( P/v + F0 + F1 + ... + Fn) dt / m
+            # where P/v is the force from power (negative if signs differ)
+            F_power = abs(power / self.velocity) * sign_p
+            F_movement = F_power + F_comp_grav
+            dv = (F_movement + F_fric) * delta_time / float(self.mass)
+            velocity = self.velocity + dv 
+#           print("Fp: {:.2f} Fg: {:.2f} Fm: {:.2f} (v0, v1): {:.5f}, {:.5f}".format(F_power, F_comp_grav, F_movement, self.velocity, velocity))
             # If there exists a point 0 < c < dt where v(c) == 0, then we need to go back to
             # the case where velocity is zero.                      NOTE NOTE NOTE NOTE NOTE
             # We can either stop the item for this time slice,      NOTE NOTE NOTE NOTE NOTE
             # or split the calculation up further                   NOTE NOTE NOTE NOTE NOTE
             # by calculating the exact time it stops and continuing from there,    NOTE NOTE
             # but I leave this as future work
-            if velocity > 0 and sign_v < 0: # if the sign changed, then v(c) == 0 exists for 0 < c < dt
+            if velocity > 0 and sign_v < 0 \
+            or velocity < 0 and sign_v > 0: # if the sign changed, then v(c) == 0 exists for 0 < c < dt
                 velocity = +0.0
 
         return velocity
@@ -134,23 +140,7 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
     def unlock(self):
         self.locked = False
 
-    # TODO: marked for refactoring
-    def min_energy(self, delta_time=1):
-        """Determine how much energy must be supplied to have any effect with a time resolution of delta_time"""
-        acceleration = self.calc_acceleration()
-        min_velocity = acceleration * delta_time
-        E_kin = (min_velocity ** 2) * self.mass / 2
-        return E_kin
-
-    # TODO: marked for refactoring
-    def min_time_resolution(self, max_energy):
-        """Determine the mininmum time resolution required if we can only deliver max_energy joules per second"""
-        acceleration = self.calc_acceleration()
-        max_velocity = math.sqrt(2 * max_energy / self.mass)
-        delta_time = max_velocity / acceleration
-        return delta_time
-
-    # TODO: NEEDS TESTING
+    # TODO: COULD USE TESTING
     def calc_acceleration(self):
         """Calculate the acceleration due to gravity and friction"""
         F_grav = self.mass * self.gravity
@@ -161,7 +151,7 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         F_sign = 1 if F_tot >= 0 else -1
         F_net = (abs(F_tot) - abs(F_fric)) * F_sign
         acceleration = F_net / self.mass
-        # TODO: NEEDS TESTING
+        # TODO: COULD USE TESTING
         if abs(F_tot) < abs(F_fric): # force can't overcome friction
             if self.velocity == 0:
                 acceleration = 0
@@ -171,7 +161,6 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
                 acceleration = +F_fric + F_tot / self.mass
         return acceleration
 
-    # TODO: marked for inspection
     def calc_power_limits(self, delta_time=1):
         F_grav = self.mass * self.gravity
         F_norm = F_grav * math.cos(self.angle)
@@ -185,20 +174,21 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         P_grav = 2 * self.mass * delta_time * (grav_accel ** 2)
         return P_stat, P_kine, P_grav
 
-    # TODO: needs testing
     # If there is no kinetic friction, the energy required is at the limit of zero and time depends on how much energy you put in
     def calc_drift(self, goal, delta=0):
         """Calculate the kinetic energy, initial velocity and time required for the item to drift into the goal"""
         distance = abs(goal - self.value) - delta
                  # F_Grav * angle * mu ## we assume no static friction for optimization
-        F_fric   = (self.mass * self.gravity) * math.cos(self.angle) * self.friction_kinetic
-        accelneg = -F_fric / self.mass
+        F_fric   = - (self.mass * self.gravity) * math.cos(self.angle) * self.friction_kinetic
+        F_move   = - (self.mass * self.gravity) * math.sin(self.angle) # movement due to gravity (if any)
+        F_tot = F_fric + F_move
+        accel = F_tot / self.mass
         # calculate the energy required to accelerate the item to a velocity that will drift into the final position
-        work = F_fric * distance
+        work = F_tot * distance
         drift_kin = abs(work) # 0.5 * self.mass * (drift_vel ** 2)
-        # TODO: vel and time need testing
         drift_vel = math.sqrt((2 * drift_kin)/self.mass)
-        drift_time = -drift_vel / accelneg
+        drift_time = abs(drift_vel / accel)
+        print("{}, {} , {} ".format(drift_kin, drift_vel, drift_time))
         return (drift_kin, drift_vel, drift_time)
 
     def calc_min_energy(self, max_time):
@@ -294,6 +284,12 @@ class TaskEnvironmentGoal(object):
         and self.target > self.value - self.delta:
             return True
 
+    # Recursively reset this goal and prerequisites 
+    def reset(self):
+        self.satisfied = False
+        if self.prerequisite:
+            self.prerequisite.reset()
+
 # SENCTOR
 class TaskEnvironmentSystem(object):
     """Class to encapsulate the behavior of a variable. Simplifies interaction.
@@ -367,11 +363,12 @@ class TaskEnvironmentModel(object):
         self.clock = 0
         self.dt = 0.001
         self.solution_score = 0.0 # the model starts as 'unsolved' with respect to any solutions
+        self.energy_expended = 0
 
     def all_variables(self):
         all_vars = set()
-        for variable in self.environment.all_variables():
-            all_vars.add(variable)
+        for var in self.environment.all_variables():
+            all_vars.add(var)
         return all_vars
 
     def tick(self, delta_time):
@@ -382,7 +379,11 @@ class TaskEnvironmentModel(object):
             for variable in self.all_variables():
                 variable.natural_transition(float(self.dt))
                 self.check_for_solutions()
-        self.clock += delta_time 
+        joules = 0
+        for motor in self.motors():
+            joules += abs(motor.power_level) * time_passed
+        self.energy_expended += joules
+        self.clock += time_passed
 
     # a solution is set of booleans representing achieved goals
     # for now solutions are simple booleans
@@ -392,6 +393,9 @@ class TaskEnvironmentModel(object):
 
     def motors(self):
         return self.environment.all_motors()
+
+    def sensors(self):
+        return self.environment.all_sensors()
 
     def solved(self):
         for goal in self.solution:
@@ -407,29 +411,50 @@ class TaskEnvironmentModel(object):
             g_vars.append(element)
         return g_vars
 
+    def reset(self):
+        # randomize goal variables
+        for var, g, d in self.goal_vars():
+            lb = 0
+            ub = 1
+            if hasattr(var, 'lower_bound'):
+                lb = var.lower_bound
+            if hasattr(var, 'upper_bound'):
+                ub = var.upper_bound
+            val = random.uniform(lb, ub)
+            var.value = val
+            var.velocity = 0
+            if var < g + d and var > g - d:
+                var = var - 3 * d
+        # reset all goal states
+        for goal in self.solution:
+            goal.reset()
+        # reset energy expenditure
+        self.energy_expended = 0
+
     def energy_needed(self):
         """Calculate the necessary power to move every variable into a goal position"""
-        joules = 0
+        joule_total = 0
         for var, goal, delta in self.goal_vars():
             if var.friction_kinetic > 0:  # kinetic friction present, calculate drift energy
                 E_min, _, _ = var.calc_drift(goal, delta)
-                joules += E_min
-            elif var.calc_acceleration() != 0:
+                joules = E_min
+            else: # There is no kinetic friction, so essentially this variable is 'free' apart from the initial push and equal stop, which we won't count since it depends on a time resolution
+                joules = 0 # We might want to add some "minimum power"
+            # calculate energy gained (or saved) because of acceleration
+            if var.calc_acceleration() != 0:
                 # the variable is (probably) moving away from its goal constantly,
                 # so calculate the energy to move it directly to the goal
                 a = var.calc_acceleration()
                 d = abs(var - goal)
                 # edge case #1: acceleration moves the value into the goal at some point in the future
                 if a > 0 and var < goal \
-                or a < 0 and var < goal:
-                    joules == 0
+                or a < 0 and var > goal:
+                    joules = 0
                 else:
                     # work = force x distance
                     work = abs(var.mass * a * d)
                     joules += work 
-            else: # There is no kinetic friction, so essentially this variable is 'free' apart from the initial push and equal stop, which we won't count since it depends on a time resolution
-                joules += 0 # We might want to add some "minimum power"
-        return joules
+        return joule_total
 
 class Motor(object): # 'Actuator'
     """A class to affect TaskEnvironmentVariables"""
