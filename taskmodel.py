@@ -188,21 +188,23 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         drift_kin = abs(work) # 0.5 * self.mass * (drift_vel ** 2)
         drift_vel = math.sqrt((2 * drift_kin)/self.mass)
         drift_time = abs(drift_vel / accel)
-        print("{}, {} , {} ".format(drift_kin, drift_vel, drift_time))
+#       print("{}, {} , {} ".format(drift_kin, drift_vel, drift_time))
         return (drift_kin, drift_vel, drift_time)
 
-    def calc_min_energy(self, max_time):
+    def calc_min_energy(self, goal, max_time, delta=0):
         """Calculate the energy required to accelerate the variable to a velocity that will drift into the final position"""
-        drift_kin, drift_vel, drift_time = self.calc_drift()
+        drift_kin, drift_vel, drift_time = self.calc_drift(goal, delta)
         # if it takes too long, increase the energy required appropriately
         if drift_time > max_time and max_time > 0:
-            distance = abs(self.goal - self.value)
-            F_fric   = (self.mass * self.gravity) * math.cos(self.angle) * self.friction_kinetic
-            accelneg = -F_fric / self.mass
-            min_vel = distance / max_time - accelneg * max_time / 2
+            distance = abs(goal - self.value) - delta
+            F_fric   = - (self.mass * self.gravity) * math.cos(self.angle) * self.friction_kinetic
+            F_move   = - (self.mass * self.gravity) * math.sin(self.angle) # movement due to gravity (if any)
+            F_tot = F_fric + F_move
+            accel = F_fric / self.mass
+            min_vel = distance / max_time - accel * max_time / 2
             E_push = self.mass * (min_vel ** 2) / 2
             # now we need to calculate the cost of stopping it
-            vel_time_t = min_vel + accelneg * max_time
+            vel_time_t = min_vel + accel * max_time
             E_stop = abs(self.mass * (vel_time_t ** 2) / 2)
 
             return E_push + E_stop, (E_push, E_stop)
@@ -223,6 +225,37 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         time = (-velocity + math.sqrt((velocity ** 2) + 2 * distance * accelneg)) / accelneg
 
         return time
+
+    def calc_min_time_e(self, goal, delta=0):
+        displacement = abs(goal - self.value) - delta
+        direction = 1 if goal > self.value else -1
+        # affectors decide how fast it can move...
+        total_max_power = 0
+        for motor in self.affectors:
+            power = motor.max_power
+            if direction == -1: # we need to reverse
+                if motor.reversible:
+                    power = motor.max_power * motor.reverse_power_ratio
+                else: # this motor is useless right now
+                    power = 0
+            total_max_power += abs(power)
+        if total_max_power == 0:
+            return 0 # we can't affect this
+        # Now we know how much power we can apply
+        # We use s = sqrt(8Pt^3 / 9m) => t = cube(9ms^2/8P)
+        min_time = ((9 * self.mass * (displacement ** 2))/(8 * total_max_power)) ** (1.0/3.0)
+        return min_time, total_max_power
+
+    def get_profile(self, goal, delta=0):
+        min_e, _, min_e_time = self.calc_drift(goal, delta=delta)
+        min_t, power = self.calc_min_time_e(goal, delta=delta)
+        min_t_e, _ = self.calc_min_energy(goal, min_t, delta=delta)
+        profile = {}
+        profile['min_energy'] = (min_e, min_e_time)
+        profile['min_time'] = (min_t_e, min_t)
+        profile['self'] = self
+        profile['goal'] = goal
+        return profile
 
 class TaskEnvironmentVariable(UnboundedTaskEnvironmentVariable):
     def set_bounds(self, lower, upper):
@@ -259,7 +292,7 @@ class TaskEnvironmentTransition(object):
             new_variables = self.transition(*args)
         return new_variables
 
-class TaskEnvironmentGoal(object):
+class TaskEnvironmentGoal(AbstractVariable):
     def __init__(self, target, goal_value, goal_delta):
         # maybe check the types here
         self.target = target
@@ -363,13 +396,12 @@ class TaskEnvironmentModel(object):
         self.clock = 0
         self.dt = 0.001
         self.solution_score = 0.0 # the model starts as 'unsolved' with respect to any solutions
-        self.energy_expended = 0
 
     def all_variables(self):
         all_vars = set()
         for var in self.environment.all_variables():
             all_vars.add(var)
-        return all_vars
+        return list(all_vars)
 
     def tick(self, delta_time):
         """Affect every variable with the natural change caused by delta_time seconds elapsing"""
@@ -379,10 +411,9 @@ class TaskEnvironmentModel(object):
             for variable in self.all_variables():
                 variable.natural_transition(float(self.dt))
                 self.check_for_solutions()
-        joules = 0
         for motor in self.motors():
-            joules += abs(motor.power_level) * time_passed
-        self.energy_expended += joules
+            joules = abs(motor.power_level) * time_passed
+            motor.usage += joules
         self.clock += time_passed
 
     # a solution is set of booleans representing achieved goals
@@ -424,12 +455,14 @@ class TaskEnvironmentModel(object):
             var.value = val
             var.velocity = 0
             if var < g + d and var > g - d:
-                var = var - 3 * d
+                var = lb
         # reset all goal states
         for goal in self.solution:
             goal.reset()
         # reset energy expenditure
         self.energy_expended = 0
+        # reset clock
+        self.clock = 0
 
     def energy_needed(self):
         """Calculate the necessary power to move every variable into a goal position"""
@@ -454,7 +487,18 @@ class TaskEnvironmentModel(object):
                     # work = force x distance
                     work = abs(var.mass * a * d)
                     joules += work 
+            joule_total += joules
         return joule_total
+
+    def get_profiles(self):
+        profiles = []
+        for var, goal, delta in self.goal_vars():
+            profile = var.get_profile(goal, delta=0)
+            profiles.append(profile)
+        return profiles
+
+    def used_energy(self):
+        return sum([motor.usage for motor in self.motors()])
 
 class Motor(object): # 'Actuator'
     """A class to affect TaskEnvironmentVariables"""
@@ -464,6 +508,7 @@ class Motor(object): # 'Actuator'
         self.target = target
         self.init_properties(properties)
         self.power_level = 0
+        self.usage = 0
         target.affectors.append(self)
 
     def init_properties(self, properties={}):
@@ -539,10 +584,51 @@ class Sensor(object):
         return round(value, self.n_digits)
 
 
+def temp_test():
+    import samples
+    t, g = samples.sample_system_1D_plotter()
+    vs = t.all_variables()
+    for vv in vs:
+        if not hasattr(vv, 'name'):
+            continue
+        if vv.name == 'position':
+            v = vv
+            break
+    assert(v), 'no v'
+    v.value = 20
+    print(v.affectors)
+    mt, p = v.calc_min_time_e(g.value)
+    me, _, me_t = v.calc_drift(g.value)
+#   print("min time: {}".format(mt))
+#   print("min time energy: {} (power * min time)".format(mt*p))
+#   print("min energy: {}, min time: {}".format(me, me_t))
+    profile = v.get_profile(g)
+    print("profile: {}".format(profile))
+    m = t.motors()[0]
+    m.activate(100)
+    t.tick(profile['min_time'][1])
+    m.activate(0)
+    print(t.solved())
+    print(v.value)
+    t.reset()
+    v.value = 20
+    m.activate(100)
+    seconds = profile['min_energy'][0] / 100
+    print("activating 100W for {} seconds".format(seconds))
+    t.tick(seconds)
+    m.activate(0)
+    part2 = profile['min_energy'][1] - seconds
+    print("ticking {} more seconds".format(part2))
+    t.tick(part2)
+    print(t.solved())
+    print(v.value)
+
+
 if __name__ == '__main__':
     # no arguments yet
     try:
         print("No main method here")
+        temp_test()
     except SystemExit:
         exit(1)
     except KeyboardInterrupt:
