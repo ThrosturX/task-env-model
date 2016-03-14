@@ -64,7 +64,7 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
 
     def natural_transition(self, delta_time=1):
         if self.locked:
-            warning("{} is locked".format(self.name))
+#           warning("{} is locked".format(self.name))
             return self.value # no change if locked
         if self.velocity == 0 and self.angle == 0 and not self.affectors:
             return self.value # not in any state of change
@@ -188,7 +188,6 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         drift_kin = abs(work) # 0.5 * self.mass * (drift_vel ** 2)
         drift_vel = math.sqrt((2 * drift_kin)/self.mass)
         drift_time = abs(drift_vel / accel)
-#       print("{}, {} , {} ".format(drift_kin, drift_vel, drift_time))
         return (drift_kin, drift_vel, drift_time)
 
     def calc_min_energy(self, goal, max_time, delta=0):
@@ -210,6 +209,7 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
             return E_push + E_stop, (E_push, E_stop)
         return drift_kin, (drift_kin, 0)
 
+    # TODO: refactor away!?
     def calc_min_time(self, max_joules):
         """Calculate the number of seconds it will take to move the variable to the final position given a limited amount of energy""" 
         distance = abs(self.goal - self.value)
@@ -255,6 +255,9 @@ class UnboundedTaskEnvironmentVariable(AbstractVariable):
         profile['min_time'] = (min_t_e, min_t)
         profile['self'] = self
         profile['goal'] = goal
+        times = numpy.arange(min_t, min_e_time, 0.1)
+        energies = [self.calc_min_energy(goal, time)[0] for time in times]
+        profile['curve'] = times, energies
         return profile
 
 class TaskEnvironmentVariable(UnboundedTaskEnvironmentVariable):
@@ -345,6 +348,10 @@ class TaskEnvironmentSystem(object):
         self.sensors = sensors
         self.systems = systems
 
+    def natural_transition(self, delta_time):
+        for transition in self.transitions:
+            transition.apply_transition(delta_time)
+
     def satisfies(self, solution):
         result = solution(*self.variables)
         return result
@@ -390,12 +397,14 @@ class TaskEnvironmentModel(object):
     """Represent task environment models as E = {V,T}
     With some abstractions.
     """
-    def __init__(self, environment, solution):
+    def __init__(self, environment, solution, max_time=0, max_energy=0):
         self.environment = environment  # should be a system
         self.solution = solution        # should be a list of goals
         self.clock = 0
         self.dt = 0.001
         self.solution_score = 0.0 # the model starts as 'unsolved' with respect to any solutions
+        self.max_time = max_time
+        self.max_energy = max_energy
 
     def all_variables(self):
         all_vars = set()
@@ -408,11 +417,13 @@ class TaskEnvironmentModel(object):
         time_passed = 0
         while time_passed < delta_time:
             time_passed += self.dt
+            for system in self.environment.all_systems():
+                system.natural_transition(float(self.dt))
             for variable in self.all_variables():
                 variable.natural_transition(float(self.dt))
                 self.check_for_solutions()
         for motor in self.motors():
-            joules = abs(motor.power_level) * time_passed
+            joules = abs(motor.power_level + motor.wasted_power) * time_passed
             motor.usage += joules
         self.clock += time_passed
 
@@ -460,7 +471,8 @@ class TaskEnvironmentModel(object):
         for goal in self.solution:
             goal.reset()
         # reset energy expenditure
-        self.energy_expended = 0
+        for motor in self.motors():
+            motor.usage = 0
         # reset clock
         self.clock = 0
 
@@ -497,8 +509,40 @@ class TaskEnvironmentModel(object):
             profiles.append(profile)
         return profiles
 
+    def calc_curve_time(self, low, high):
+        times = numpy.arange(low, high, 0.1)
+        energy = [0] * len(times)
+        for var, goal, _ in self.goal_vars():
+            for x, time in enumerate(times):
+                energy[x] = energy[x] + var.calc_min_energy(goal, time)[0]
+        return times, energy
+    
+    def get_profile(self):
+        profile = {}
+        me = 0, 0
+        mt = 0, 0
+        total_power = 0
+        for var, goal, delta in self.goal_vars():
+            min_e, _, min_e_time = var.calc_drift(goal, delta=delta)
+            min_t, power = var.calc_min_time_e(goal, delta=delta)
+            min_t_e, _ = var.calc_min_energy(goal, min_t, delta=delta)
+            me = me[0] + min_e, me[1] + min_e_time
+            mt = mt[0] + min_t_e, mt[1] + min_t
+            total_power += power
+        profile['min_energy'] = me
+        profile['min_time'] = mt
+        curve = self.calc_curve_time(mt[0], me[1])
+        profile['curve'] = curve
+        profile['power'] = total_power
+        return profile
+
     def used_energy(self):
         return sum([motor.usage for motor in self.motors()])
+
+    def failed(self):
+        fail_time = self.clock > self.max_time and self.max_time > 0
+        fail_energy = self.used_energy() > self.max_energy and self.max_energy > 0 
+        return fail_time or fail_energy
 
 class Motor(object): # 'Actuator'
     """A class to affect TaskEnvironmentVariables"""
@@ -508,6 +552,7 @@ class Motor(object): # 'Actuator'
         self.target = target
         self.init_properties(properties)
         self.power_level = 0
+        self.wasted_power = 0
         self.usage = 0
         target.affectors.append(self)
 
@@ -519,14 +564,18 @@ class Motor(object): # 'Actuator'
 
     # Note: watts express the rate of energy transfer with respect to time
     def activate(self, watts):
+        self.power_level = watts
         # conditional checks regarding whether it can be activated in this way
         if watts < 0 and not self.reversible:
             warning("Attempting to reverse a unidirectional motor")
+            self.power_level = 0
         if watts > self.max_power:
+            self.power_level = self.max_power
             warning("Attempting to activate a {} W motor with {} W".format(self.max_power, watts))
         if watts < 0 and watts > self.reverse_power_ratio * self.max_power:
             warning("Reversing a {} W motor at {} W with a ratio of {} (max reversal power is {})".format(self.max_power, watts, self.reverse_power_ratio, self.reverse_power_ratio * self.max_power))
-        self.power_level = watts
+            self.power_level = self.reverse_power_ratio * self.max_power
+        self.wasted_power = abs(watts - self.power_level)
 
     def component(self, item):
         if item == self.target:
