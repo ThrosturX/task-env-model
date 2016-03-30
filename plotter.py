@@ -58,9 +58,12 @@ def plot_results_on_profile(result_file, profile):
 def main(args):
     if args.filename:
 #       task = samples.sample_system_1D_plotter(5000, default_start=20, default_delta=0)[0]
-        task = samples.sample_system_1Db_plotter(default_start=20, default_delta=0)[0]
+        task = samples.sample_system_1Db_plotter2(default_start=20, default_delta=0)[0]
+        for var in task.all_variables():
+            if hasattr(var, 'name'):
+                print("{}: {}".format(var.name, var))
         profile = task.get_profile()
-        profile['curve'] = task.calc_curve_time(0.01, profile['min_time'][1])
+        profile['curve'] = task.calc_curve_time(0.01, profile['min_energy'][1])
         plot_results_on_profile(args.filename, profile)
 
 
