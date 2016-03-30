@@ -9,7 +9,7 @@ def plot_task(task):
         plot_profile(profile)
         input("next?")
 
-def plot_profile(profile):
+def plot_profile(profile, fname='default'):
     print(profile)
     high_energy, low_time = profile['min_time']
     plt.plot([low_time], [high_energy], 'ro')
@@ -25,18 +25,43 @@ def plot_profile(profile):
     plt.grid(True)
     plt.xlim(xmin=0)
     plt.ylim(ymin=0, ymax=profile['min_time'][0])
-    plt.savefig('test.png')
+    plt.savefig(fname.strip('.txt') + '.png')
 
 def plot_results_on_profile(result_file, profile):
-    plot_profile(profile)
+    # very green = early result
+    # very dark green = late result
+    # more red = more recent result
+    def next_color(current):
+        green_str = current[3:5]
+        green = int(green_str, 16) - 3
+        red_str = current[1:3]
+        red = int(red_str, 16)
+        blue = int(current[5:7])
+        if green > 255 \
+        or green < 0:
+            if red == 0:
+                red = 64
+            green = 125
+            red = red + 17
+        if red >= 255:
+            green = 0
+            red = 255
+            blue += 1
+            if blue > 255:
+                blue = 255
+        color = '#{:02X}{:02X}{:02X}'.format(red, green, blue)
+        return color
+    plot_profile(profile, result_file)
     with open(result_file, 'r') as results:
+        current_color = '#00FF00'
         for result_line in results:
+            current_color = next_color(current_color)
             if result_line[0] and result_line[0].isdigit():
                 parts = [float(x) for x in result_line.split()]
                 if parts[0] <= 0:
                     continue
                 # format is STEPS, ENERGY, CLOCK, MIN_ENERGY
-                plt.plot([parts[2]], [parts[1]], 'go')
+                plt.plot([parts[2]], [parts[1]], 'x', color=current_color)
                 xmin, xmax = plt.xlim()
                 ymin, ymax = plt.ylim()
                 plt.xlim(xmax=max(xmax, parts[2]*1.05))
