@@ -59,7 +59,7 @@ def main(args):
     if args.filename:
 #       task = samples.sample_system_1D_plotter(5000, default_start=20, default_delta=0)[0]
         task = samples.sample_system_1Db_plotter2(default_start=20, default_delta=0)[0]
-        for var in task.all_variables():
+        for var in task.all_objects():
             if hasattr(var, 'name'):
                 print("{}: {}".format(var.name, var))
         profile = task.get_profile()
