@@ -78,12 +78,12 @@ def plot_results_on_profile(result_file, profile):
         times = np.arange(0.0, xmax, 0.1)
         powers = [power * time for time in times]
         plt.plot(times, powers, 'r')
-    plt.savefig('test.png')
+    plt.savefig(result_file.strip('.txt') + '.png')
 
 def main(args):
     if args.filename:
-#       task = samples.sample_system_1D_plotter(5000, default_start=20, default_delta=0)[0]
-        task = samples.sample_system_1Db_plotter2(default_start=20, default_delta=0)[0]
+#       task = samples.sample_system_1D_plotter(max_power=200, default_start=20, default_delta=0)[0]
+        task = samples.sample_system_1Db_plotter2(max_power=200, default_start=20, default_delta=0)[0]
         for var in task.all_objects():
             if hasattr(var, 'name'):
                 print("{}: {}".format(var.name, var))
