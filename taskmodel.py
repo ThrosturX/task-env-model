@@ -428,7 +428,7 @@ class TaskEnvironmentModel(object):
             # let all objects tick
             for obj in self.all_objects():
                 obj.natural_transition(float(self.dt))
-                self.check_for_solutions()
+            self.check_for_solutions()
         for motor in self.motors():
             joules = abs(motor.power_level + motor.wasted_power) * time_passed
             motor.usage += joules
@@ -530,18 +530,24 @@ class TaskEnvironmentModel(object):
         me = 0
         mt = 0
         total_power = 0
+        powers = []
         min_times = []
         min_e_times = []
         for var, goal, epsilon in self.goal_vars():
-            min_e, _, min_e_time = var.calc_drift(goal, epsilon=epsilon)
+            min_e, vel, min_e_time = var.calc_drift(goal, epsilon=epsilon)
+            mte, power = var.calc_min_time_e(goal, epsilon=epsilon)
+#           ramp_time = ((vel ** 2) * var.mass) / (2 * power)
+#           min_e_time += ramp_time
             min_e_times.append(min_e_time)
+            min_times.append(mte)
+            powers.append(power)
             me = me + min_e
-            min_times.append(var.calc_min_time_e(goal, epsilon=epsilon)[0])
+
+        total_power = sum(powers)
         # Now choose the highest min_time and calculate min_time energy based on that     
+        max_time = sum(min_times)
         for var, goal, epsilon in self.goal_vars():
-            _, power = var.calc_min_time_e(goal, epsilon=epsilon)
-            total_power += power
-            min_t_e, _ = var.calc_min_energy(goal, sum(min_times), epsilon=epsilon)
+            min_t_e, _ = var.calc_min_energy(goal, max_time, epsilon=epsilon)
             mt = mt + min_t_e
 
         me = me, max(min_e_times)
