@@ -129,7 +129,7 @@ def sample_system_1Db_plotter2(max_power=100, default_start=50, default_delta=50
     # create the task+environment system (the task has been encoded into goals)
     sol_system = TaskEnvironmentSystem(goal_vars, systems=hammer)
     # create the task environment model with accompanying goals
-    task = TaskEnvironmentModel(sol_system, [correct_position, mole_whacked], max_time=120, max_energy=10000)
+    task = TaskEnvironmentModel(sol_system, [correct_position, mole_whacked], max_time=60, max_energy=10000)
     return task, mole_whacked
 
 def sample_system_2D_plotter():
@@ -240,4 +240,66 @@ def sample_rotating_motor():
     solution.add_prerequisite(gy)
     task = TaskEnvironmentModel(rotating_system, [solution])
     return rotating_system, task
+
+def sample_N_task(N, delta=2):
+    env = TaskEnvironmentSystem(objects=[], sensors=[], systems=[])
+    sol = []
+    hidden_motor_system = TaskEnvironmentSystem(objects=[], transitions=[], motors=[], sensors=[], systems=[])
+    for x in range(N):
+        obj = TaskEnvironmentObject(3, delta)
+        obj.name = 'obj_' + str(x)
+        obj.set_bounds(0, 10)
+        obj.gravity = 10
+        obj.friction_kinetic = 0.2
+        obj.friction_static = 0.3
+        sensor = Sensor(obj, 0, 0.05)
+        goal = TaskEnvironmentGoal(obj, 10, 0.5)
+        motor = Motor(obj, {'max_power':1, 'reversible': False}) # hidden motor!
+        hidden_motor_system.motors.append(motor)
+        env.objects.append(obj)
+        env.sensors.append(sensor)
+        sol.append(goal)
+    env.systems.append(hidden_motor_system)
+    active_dimension = TaskEnvironmentObject(0, 0)
+    active_dimension.mass = 0.01
+    active_dimension.name = 'enumerator'
+    active_dimension.set_bounds(0, N-1)
+    activation_power = TaskEnvironmentObject(0, 0)
+    activation_power.name = 'power_level'
+    activation_power.set_bounds(0, 1)
+    s_dim = Sensor(active_dimension, 0, 0)
+    s_pow = Sensor(activation_power, 0, 0)
+    selector_motor = Motor(active_dimension, {'max_power':0.1, 'reversible': True})
+    activator_motor = Motor(activation_power, {'max_power':1, 'reversible': False})
+
+    def func_transition(active_dimension, activation_power, objects, delta_time):
+        main_motor = activation_power.affectors[0]
+        power = main_motor.power_level
+        activation_power.value = power
+        objs_named = True
+        for obj in objects:
+            if not hasattr(obj, 'name'):
+                objs_named = False
+                break
+        if objs_named:
+            objects.sort(key=lambda x: x.name) # note: in-place sort
+        selection = objects[int(active_dimension.value)]
+        target_motor = selection.affectors[0]
+        target_motor.activate(power) # this is a hidden motor, which gets counted with the hidden_motor_system
+#       main_motor.power_level = 0
+        main_motor.wasted_power = 0
+        main_motor.usage = 0
+
+    affected_objs = [active_dimension, activation_power, env.objects]
+    transition = TaskEnvironmentTransition(affected_objs, func_transition)
+    control_system = TaskEnvironmentSystem([active_dimension, activation_power], transitions=[transition], motors=[selector_motor, activator_motor], sensors=[s_dim, s_pow], systems=[])
+    env.systems.append(control_system)
+    task = TaskEnvironmentModel(env, sol, max_time=20, max_energy=200)
+    min_energy = task.energy_needed()
+    maxen = min_energy * 3
+    task.max_energy = maxen
+    task.max_time = maxen / 9
+    return task, sol
+
+
 

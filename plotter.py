@@ -12,9 +12,9 @@ def plot_task(task):
 def plot_profile(profile, fname='default'):
     print(profile)
     high_energy, low_time = profile['min_time']
-    plt.plot([low_time], [high_energy], 'ro')
+    plt.plot([low_time], [high_energy], 'ro') # red: fast but costly
     low_energy, high_time = profile['min_energy']
-    plt.plot([high_time], [low_energy], 'bo')
+    plt.plot([high_time], [low_energy], 'bo') # blue: slow but energy efficient
     # some intermediate points
     times, energies = profile['curve']
     plt.plot(times, energies)
@@ -36,7 +36,7 @@ def plot_results_on_profile(result_file, profile):
         green = int(green_str, 16) - 3
         red_str = current[1:3]
         red = int(red_str, 16)
-        blue = int(current[5:7])
+        blue = int(current[5:7], 16)
         if green > 255 \
         or green < 0:
             if red == 0:
@@ -66,6 +66,9 @@ def plot_results_on_profile(result_file, profile):
                 ymin, ymax = plt.ylim()
                 plt.xlim(xmax=max(xmax, parts[2]*1.05))
                 plt.ylim(ymax=max(ymax, parts[1]*1.05))
+    # include the cutoff in the plot
+    plt.xlim(xmax=max(xmax, profile['max_time']))
+    plt.ylim(ymax=max(ymax, profile['power'] * profile['max_time']))
     # now plot a line from min_e_t, min_e -> xmax, min_e
     # (the MINIMUM amount of energy doesn't depend on time)
     xmin, xmax = plt.xlim()
@@ -83,7 +86,8 @@ def plot_results_on_profile(result_file, profile):
 def main(args):
     if args.filename:
 #       task = samples.sample_system_1D_plotter(max_power=200, default_start=20, default_delta=0)[0]
-        task = samples.sample_system_1Db_plotter2(max_power=200, default_start=20, default_delta=0)[0]
+#       task = samples.sample_system_1Db_plotter2(max_power=200, default_start=20, default_delta=0)[0]
+        task, _ = samples.sample_N_task(50, delta=0)
         for var in task.all_objects():
             if hasattr(var, 'name'):
                 print("{}: {}".format(var.name, var))
@@ -99,7 +103,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     try:
         main(args)
-        plt.show()
+#       plt.show()
     except SystemExit:
         exit(1)
     except KeyboardInterrupt:

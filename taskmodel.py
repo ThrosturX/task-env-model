@@ -336,7 +336,8 @@ class TaskEnvironmentSystem(object):
     """Class to encapsulate the behavior of objects. Simplifies interaction.
     Systems can have objects, transitions, motors, sensors and other systems.
     """
-    def __init__(self, objects, transitions=[], motors=[], sensors=[], systems=[]):
+    # Beware this constructor, it seems like sometimes I have to specify explicitly, otherwise they take values from memory?
+    def __init__(self, objects=[], transitions=[], motors=[], sensors=[], systems=[]):
         if not hasattr(objects, '__iter__'):
             objects = [objects]
         if not hasattr(transitions, '__iter__'):
@@ -477,9 +478,11 @@ class TaskEnvironmentModel(object):
         # reset all goal states
         for goal in self.solution:
             goal.reset()
-        # reset energy expenditure
+        # reset motors and energy expenditure
         for motor in self.motors():
             motor.usage = 0
+            motor.power_level = 0
+            motor.wasted_power = 0
         # reset clock
         self.clock = 0
 
@@ -550,13 +553,15 @@ class TaskEnvironmentModel(object):
             min_t_e, _ = var.calc_min_energy(goal, max_time, epsilon=epsilon)
             mt = mt + min_t_e
 
-        me = me, max(min_e_times)
-        mt = mt, sum(min_times)
+        me = me, max(min_e_times) # should not use a lot of energy, so will take longer
+        mt = mt, max(min_times) # should be fast but use a lot of energy
         profile['min_energy'] = me
         profile['min_time'] = mt
         curve = self.calc_curve_time(mt[1], me[1])
         profile['curve'] = curve
         profile['power'] = total_power
+        profile['max_time'] = self.max_time
+        profile['max_energy'] = self.max_energy
 #       # NOTE: Just return the most greedy profile
 #       max_energy = 0
 #       profile = None
