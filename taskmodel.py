@@ -392,12 +392,12 @@ class TaskEnvironmentSystem(object):
         return list(self.systems)
 
     def lock_objects(self):
-        for object in self.objects:
-            object.lock()
+        for obj in self.objects:
+            obj.lock()
 
     def unlock_objects(self):
-        for object in self.objects:
-            object.unlock()
+        for obj in self.objects:
+            obj.unlock()
 
 class TaskEnvironmentModel(object):
     """Represent task environment models as E = {V,T}
@@ -588,6 +588,7 @@ class Motor(object): # 'Actuator'
         self.init_properties(properties)
         self.power_level = 0
         self.wasted_power = 0
+        self.accel_t = 0.001
         self.usage = 0
         target.affectors.append(self)
 

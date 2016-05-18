@@ -40,7 +40,7 @@ def sample_system_1Db_plotter(max_power=100, default_start=50, default_delta=50)
     position.friction_kinetic = 0.2
     position.friction_static = 0.3
     position.mass = 5 
-    position.name = 'position'  # syntactic sugar, just gives a label to the variable for printing
+    position.name = 'position'   # syntactic sugar, just gives a label to the variable for printing
     # whack hammer variable
     whack_it = TaskEnvironmentObject(0, 0)
     whack_it.set_bounds(0, 1)
